@@ -1,0 +1,18 @@
+[project]
+name = "wakelan-relay"
+version = "0.1.0"
+description = "Simple Wake-on-LAN relay HTTP server"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "PowerOn Relay" }
+]
+dependencies = []
+
+[project.scripts]
+wol-relay = "wol_relay:main"
+
+[tool.uv]
+default-groups = ["dev"]
+
+
