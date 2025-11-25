@@ -22,6 +22,7 @@ DEFAULT_SLEEP_CMD_WINDOWS = os.environ.get(
     "powershell.exe -Command \"Start-Sleep -Seconds 1; Add-Type -AssemblyName System.Windows.Forms; "
     "[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)\"",
 )
+DEFAULT_SLEEP_CMD_MACOS = os.environ.get("WOL_SLEEP_CMD_MACOS", "pmset sleepnow")
 LOG_LEVEL = os.environ.get("WOL_LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.environ.get("WOL_LOG_FILE", "logs/wol_relay.log")
 LOG_MAX_BYTES = int(os.environ.get("WOL_LOG_MAX_BYTES", str(1_000_000)))
@@ -97,6 +98,8 @@ def trigger_sleep(
             command = DEFAULT_SLEEP_CMD_LINUX
         elif normalized in ("windows", "win"):
             command = DEFAULT_SLEEP_CMD_WINDOWS
+        elif normalized in ("macos", "mac", "darwin"):
+            command = DEFAULT_SLEEP_CMD_MACOS
         else:
             raise ValueError("Unknown OS type and no custom command provided")
 
@@ -113,17 +116,26 @@ def trigger_sleep(
 
 def ping_host(host: str) -> bool:
     """Ping a host and return True if online."""
-    param = '-n' if os.name == 'nt' else '-c'
-    timeout_param = '-w' if os.name == 'nt' else '-W'
+    param = "-n" if os.name == "nt" else "-c"
+    timeout_param = "-w" if os.name == "nt" else "-W"
     # Timeout 1000ms (1s)
-    command = ['ping', param, '1', timeout_param, '1000', host]
-    
+    command = ["ping", param, "1", timeout_param, "1000", host]
+
     try:
         subprocess.check_output(command, stderr=subprocess.STDOUT)
         return True
     except subprocess.CalledProcessError:
         return False
     except Exception:
+        return False
+
+
+def check_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Try connecting to a TCP port to determine availability."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
         return False
 
 
@@ -156,7 +168,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            if self.path == "/wake":
+            if self.path == "/api/control":
+                self._handle_control(data)
+            elif self.path == "/wake":
                 self._handle_wake(data)
             elif self.path == "/sleep":
                 self._handle_sleep(data)
@@ -166,13 +180,46 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
         except subprocess.CalledProcessError as exc:
             LOGGER.exception("Sleep command failed")
-            self._send_json(502, {"error": "Sleep command failed", "details": str(exc)})
+            self._send_json(502, {
+                "error": "Sleep command failed",
+                "details": str(exc),
+                "returncode": exc.returncode,
+                "command": " ".join(exc.cmd) if exc.cmd else None
+            })
         except Exception as exc:
             LOGGER.exception("Unhandled error while processing %s", self.path)
             self._send_json(500, {"error": str(exc)})
 
+    def _handle_control(self, data: Dict[str, Any]) -> None:
+        action = (data.get("action") or "").lower()
+        if action not in {"wake", "sleep"}:
+            raise ValueError("Unsupported 'action' value. Use 'wake' or 'sleep'.")
+
+        if action == "wake":
+            mac_address = data.get("mac_address") or data.get("mac")
+            if not mac_address:
+                raise ValueError("Missing 'mac_address' parameter for wake action")
+            send_magic_packet(mac_address)
+            self._send_json(200, {"status": "success", "action": "wake"})
+            return
+
+        # action == "sleep"
+        host = (
+            data.get("host")
+            or data.get("ip_address")
+            or data.get("ip")
+        )
+        if not host:
+            raise ValueError("Missing 'ip_address' or 'host' parameter for sleep action")
+
+        command = data.get("command")
+        os_type = data.get("os")
+        LOGGER.info("Control sleep request: host=%s, os=%s, command=%s", host, os_type, command)
+        trigger_sleep(host, os_type=os_type, custom_command=command)
+        self._send_json(200, {"status": "success", "action": "sleep"})
+
     def _handle_wake(self, data: Dict[str, Any]) -> None:
-        mac_address = data.get("mac")
+        mac_address = data.get("mac") or data.get("mac_address")
         if not mac_address:
             raise ValueError("Missing 'mac' parameter")
 
@@ -180,29 +227,53 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "success"})
 
     def _handle_sleep(self, data: Dict[str, Any]) -> None:
-        host = data.get("host")
+        host = data.get("host") or data.get("ip_address") or data.get("ip")
         if not host:
-            raise ValueError("Missing 'host' parameter")
+            raise ValueError("Missing 'host' or 'ip_address' parameter")
 
         command = data.get("command")
         os_type = data.get("os")
+        LOGGER.info("Sleep request: host=%s, os=%s, command=%s", host, os_type, command)
         trigger_sleep(host, os_type=os_type, custom_command=command)
         self._send_json(200, {"status": "success"})
 
     def _handle_status(self) -> None:
         from urllib.parse import urlparse, parse_qs
+
         query = parse_qs(urlparse(self.path).query)
-        ip = query.get('ip', [None])[0]
-        
+        ip = query.get("ip", [None])[0]
+
         if not ip:
             self._send_json(400, {"error": "IP address required"})
             return
-            
-        is_online = ping_host(ip)
-        self._send_json(200, {
-            "ip": ip,
-            "status": "online" if is_online else "offline"
-        })
+
+        port_raw = query.get("port", [None])[0]
+        if port_raw in (None, "", []):
+            port = 22
+        else:
+            try:
+                port = int(port_raw)
+            except ValueError:
+                self._send_json(400, {"error": "Invalid port value"})
+                return
+
+        ping_ok = ping_host(ip)
+        if not ping_ok:
+            status = "offline"
+        else:
+            tcp_ok = check_tcp_port(ip, port)
+            status = "online" if tcp_ok else "sleeping"
+
+        self._send_json(
+            200,
+            {
+                "ip": ip,
+                "port": port,
+                "status": status,
+                "ping": ping_ok,
+                "tcp": ping_ok and (status == "online"),
+            },
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         LOGGER.info("[%s] %s %s", self.log_date_time_string(), self.address_string(), format % args)
