@@ -6,7 +6,8 @@ LAN 内に常駐させる Wake-on-LAN (WoL) 中継サーバーです。Tailscale
 
 - ⚡ **WoL REST API**: `POST /wake` で簡潔に起動リクエストを送信
 - 😴 **リモートスリープ**: SSH 経由で端末をスリープ（`POST /sleep`）
-- 🩺 **ヘルスチェック**: `GET /healthz` で稼働確認
+- 🩺 **ヘルスチェック**: `GET /healthz` / `/health` で稼働確認
+- 👀 **オンライン判定**: `GET /api/status?ip=...` で疎通状況を取得
 - 🔧 **環境変数で設定可能**: 待受ポートやブロードキャスト宛先を切り替え
 - 📦 **uv ベースの環境構築**: 依存ゼロでも再現性のあるセットアップ
 
@@ -64,7 +65,15 @@ curl -X POST http://relay.local:5000/wake \
 
 ### GET `/healthz`
 
-稼働確認用の軽量エンドポイント。`{"status":"ok"}` を返します。
+稼働確認用の軽量エンドポイント。`{"status":"ok"}` を返します。監視互換のため `/health` も同じ応答です。
+
+### GET `/api/status?ip=192.168.1.10`
+
+指定 IP に 1 回 ping を送信し、`{"status":"online"}` もしくは `"offline"` を返します。
+
+```
+curl "http://relay.local:5000/api/status?ip=192.168.1.10"
+```
 
 ### POST `/sleep`
 

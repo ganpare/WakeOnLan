@@ -13,6 +13,6 @@ dependencies = []
 wol-relay = "wol_relay:main"
 
 [tool.uv]
-default-groups = ["dev"]
+package = true
 
 

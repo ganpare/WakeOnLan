@@ -111,6 +111,22 @@ def trigger_sleep(
     LOGGER.info("Succeeded sleeping host %s", host)
 
 
+def ping_host(host: str) -> bool:
+    """Ping a host and return True if online."""
+    param = '-n' if os.name == 'nt' else '-c'
+    timeout_param = '-w' if os.name == 'nt' else '-W'
+    # Timeout 1000ms (1s)
+    command = ['ping', param, '1', timeout_param, '1000', host]
+    
+    try:
+        subprocess.check_output(command, stderr=subprocess.STDOUT)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except Exception:
+        return False
+
+
 class RequestHandler(BaseHTTPRequestHandler):
     server_version = "WOLRelay/0.1"
 
@@ -121,8 +137,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(body).encode())
 
     def do_GET(self) -> None:
-        if self.path == "/healthz":
+        if self.path in {"/health", "/healthz"}:
+            # Allow both /health and /healthz for compatibility with external monitors
             self._send_json(200, {"status": "ok"})
+        elif self.path.startswith("/api/status"):
+            self._handle_status()
         else:
             self.send_error(404, "Not Found")
 
@@ -169,6 +188,21 @@ class RequestHandler(BaseHTTPRequestHandler):
         os_type = data.get("os")
         trigger_sleep(host, os_type=os_type, custom_command=command)
         self._send_json(200, {"status": "success"})
+
+    def _handle_status(self) -> None:
+        from urllib.parse import urlparse, parse_qs
+        query = parse_qs(urlparse(self.path).query)
+        ip = query.get('ip', [None])[0]
+        
+        if not ip:
+            self._send_json(400, {"error": "IP address required"})
+            return
+            
+        is_online = ping_host(ip)
+        self._send_json(200, {
+            "ip": ip,
+            "status": "online" if is_online else "offline"
+        })
 
     def log_message(self, format: str, *args: Any) -> None:
         LOGGER.info("[%s] %s %s", self.log_date_time_string(), self.address_string(), format % args)

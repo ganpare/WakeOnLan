@@ -1,8 +1,14 @@
 # Virtual environments
 .venv/
+__pycache__/
+*.egg-info/
 
 # macOS metadata
 .DS_Store
 ._*
+
+# Local logs
+logs/
+server_stdout.log
 
 
