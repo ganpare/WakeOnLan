@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import shlex
 import socket
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Server configuration (override via environment variables if needed)
@@ -19,6 +22,42 @@ DEFAULT_SLEEP_CMD_WINDOWS = os.environ.get(
     "powershell.exe -Command \"Start-Sleep -Seconds 1; Add-Type -AssemblyName System.Windows.Forms; "
     "[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)\"",
 )
+LOG_LEVEL = os.environ.get("WOL_LOG_LEVEL", "INFO").upper()
+LOG_FILE = os.environ.get("WOL_LOG_FILE", "logs/wol_relay.log")
+LOG_MAX_BYTES = int(os.environ.get("WOL_LOG_MAX_BYTES", str(1_000_000)))
+LOG_BACKUP_COUNT = int(os.environ.get("WOL_LOG_BACKUP_COUNT", "5"))
+
+
+def _setup_logger() -> logging.Logger:
+    logger = logging.getLogger("wol_relay")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(LOG_LEVEL)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    log_file = LOG_FILE.strip()
+    if log_file:
+        log_path = Path(log_file)
+        if log_path.parent:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.propagate = False
+    return logger
+
+
+LOGGER = _setup_logger()
 
 
 def create_magic_packet(mac_address: str) -> bytes:
@@ -40,7 +79,7 @@ def send_magic_packet(
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.sendto(packet, (broadcast_ip, broadcast_port))
-    print(f"Sent magic packet to {mac_address} via {broadcast_ip}:{broadcast_port}")
+    LOGGER.info("Sent magic packet to %s via %s:%s", mac_address, broadcast_ip, broadcast_port)
 
 
 def trigger_sleep(
@@ -67,9 +106,9 @@ def trigger_sleep(
     ssh_parts.append(host)
     ssh_parts.append(command)
 
-    print(f"Executing sleep command on {host}: {command}")
+    LOGGER.info("Executing sleep command on %s: %s", host, command)
     subprocess.run(ssh_parts, check=True)
-    print(f"Succeeded sleeping host {host}")
+    LOGGER.info("Succeeded sleeping host %s", host)
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -107,10 +146,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
         except subprocess.CalledProcessError as exc:
-            print(f"Sleep command failed: {exc}")
+            LOGGER.exception("Sleep command failed")
             self._send_json(502, {"error": "Sleep command failed", "details": str(exc)})
         except Exception as exc:
-            print(f"Error: {exc}")
+            LOGGER.exception("Unhandled error while processing %s", self.path)
             self._send_json(500, {"error": str(exc)})
 
     def _handle_wake(self, data: Dict[str, Any]) -> None:
@@ -132,7 +171,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "success"})
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {self.address_string()} {format % args}")
+        LOGGER.info("[%s] %s %s", self.log_date_time_string(), self.address_string(), format % args)
 
 
 def run(
@@ -143,7 +182,7 @@ def run(
 ) -> None:
     server_address = (bind_address, port)
     httpd = server_class(server_address, handler_class)
-    print(f"Starting WoL Relay Server on {bind_address}:{port}...")
+    LOGGER.info("Starting WoL Relay Server on %s:%s", bind_address, port)
     httpd.serve_forever()
 
 

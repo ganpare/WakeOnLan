@@ -38,6 +38,10 @@ uv run wol-relay  # または uv run python wol_relay.py
 | `WOL_SSH_EXTRA_ARGS` | なし | `-i ~/.ssh/id_ed25519` など追加したいオプション |
 | `WOL_SLEEP_CMD_LINUX` | `systemctl suspend` | Linux 系のデフォルトスリープコマンド |
 | `WOL_SLEEP_CMD_WINDOWS` | PowerShell スクリプト | Windows のデフォルトスリープコマンド |
+| `WOL_LOG_FILE` | `logs/wol_relay.log` | ローテーション付きのログファイル出力先。空文字で無効化 |
+| `WOL_LOG_LEVEL` | `INFO` | `DEBUG` など Python 標準のログレベル |
+| `WOL_LOG_MAX_BYTES` | `1000000` | 1 ファイルあたりの最大バイト数（超えるとローテート） |
+| `WOL_LOG_BACKUP_COUNT` | `5` | 保持するローテーション済みファイル数 |
 
 例:
 
@@ -89,6 +93,10 @@ curl -X POST http://relay.local:5000/sleep \
 - ローカルで動作確認する際はブロードキャストを抑制したい場合があるため、`WOL_BROADCAST_IP=127.0.0.1` などに切り替えてネットワークにパケットを流さない設定も可能です。
 - `/sleep` 利用時は中継サーバー上で `ssh host` がパスワードなしで実行できるよう、公開鍵認証や `~/.ssh/config` の設定を済ませてください。
 - `uv run python -m http.server` などと同様、`uv run` でスクリプトを実行すれば仮想環境を意識せずに開発できます。
+
+## ロギング
+
+サーバーは標準出力に加えて `logs/wol_relay.log` へローテーション付きでログを書き出します。`WOL_LOG_FILE` を空文字にするとファイル出力を無効にでき、`WOL_LOG_LEVEL` などの環境変数で出力量も調整できます。
 
 ## iPhoneアプリ向け指示書
 
