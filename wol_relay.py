@@ -122,11 +122,16 @@ def ping_host(host: str) -> bool:
     command = ["ping", param, "1", timeout_param, "1000", host]
 
     try:
-        subprocess.check_output(command, stderr=subprocess.STDOUT)
+        subprocess.check_output(command, stderr=subprocess.STDOUT, timeout=2)
         return True
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
+        LOGGER.debug("Ping failed for %s: %s", host, exc)
         return False
-    except Exception:
+    except subprocess.TimeoutExpired:
+        LOGGER.warning("Ping timeout for %s", host)
+        return False
+    except Exception as exc:
+        LOGGER.warning("Ping error for %s: %s", host, exc)
         return False
 
 
@@ -135,7 +140,11 @@ def check_tcp_port(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
-    except OSError:
+    except socket.timeout:
+        LOGGER.debug("TCP connection timeout for %s:%s", host, port)
+        return False
+    except OSError as exc:
+        LOGGER.debug("TCP connection failed for %s:%s: %s", host, port, exc)
         return False
 
 
@@ -244,6 +253,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         ip = query.get("ip", [None])[0]
 
         if not ip:
+            LOGGER.warning("Status request missing IP address")
             self._send_json(400, {"error": "IP address required"})
             return
 
@@ -254,16 +264,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 port = int(port_raw)
             except ValueError:
+                LOGGER.warning("Status request with invalid port: %s", port_raw)
                 self._send_json(400, {"error": "Invalid port value"})
                 return
 
+        LOGGER.info("Status check request: ip=%s, port=%s", ip, port)
         ping_ok = ping_host(ip)
+        LOGGER.debug("Ping result for %s: %s", ip, ping_ok)
+        
         if not ping_ok:
             status = "offline"
         else:
             tcp_ok = check_tcp_port(ip, port)
+            LOGGER.debug("TCP check result for %s:%s: %s", ip, port, tcp_ok)
             status = "online" if tcp_ok else "sleeping"
 
+        LOGGER.info("Status check result: ip=%s, status=%s, ping=%s, tcp=%s", ip, status, ping_ok, ping_ok and (status == "online"))
         self._send_json(
             200,
             {
